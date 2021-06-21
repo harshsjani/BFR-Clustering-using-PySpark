@@ -40,3 +40,4 @@ data/test5/data4.txt
 data/test5/data5.txt
 data/test5/data6.txt
 data/test5/data7.txt
+test/*__pycache__
