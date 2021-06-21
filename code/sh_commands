@@ -1,1 +1,1 @@
-spark-submit bfr.py ../data/test1 10 ../out/test1_clust_out.txt ../out/test1_int_out.txt
+spark-submit code/bfr.py data/test1 10 out/test1_clust_out.txt out/test1_int_out.txt
