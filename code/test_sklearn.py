@@ -31,13 +31,15 @@ class HCluster:
             new_centroid = None
 
             for point in points:
-                distance_sum = 0
+                min_dist = Utils.INF
                 if not point in used_points:
                     for x in range(current_k):
-                        distance_sum += Utils.euclidean_distance(
+                        dist = Utils.euclidean_distance(
                             point, centroids[x])
-                if distance_sum > maxdist:
-                    maxdist = distance_sum
+                        if dist < min_dist:
+                            min_dist = dist
+                if min_dist > maxdist:
+                    maxdist = min_dist
                     new_centroid = point
 
             centroids[i] = new_centroid
@@ -138,32 +140,6 @@ class Utils:
         for i in range(num_dims):
             sqsm += pow((p1[i] - p2[i]), 2)
         return math.sqrt(sqsm)
-    
-    @staticmethod
-    def get_centroids(points, num_clusters):
-        centroids = [None] * num_clusters
-        used_points = set()
-        centroids[0] = random.Random().choice(points)
-        used_points.add(centroids[0])
-        current_k = 1
-
-        for i in range(1, num_clusters):
-            maxdist = 0
-            new_centroid = None
-
-            for point in points:
-                distance_sum = 0
-                if not point in used_points:
-                    for x in range(current_k):
-                        distance_sum += Utils.euclidean_distance(
-                            point, centroids[x])
-                if distance_sum > maxdist:
-                    maxdist = distance_sum
-                    new_centroid = point
-
-            centroids[i] = new_centroid
-            used_points.add(new_centroid)
-        return centroids
 
 
 class Runner:
