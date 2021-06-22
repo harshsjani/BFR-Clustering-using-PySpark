@@ -5,6 +5,7 @@ import os
 import random
 import sys
 import time
+import copy
 
 from collections import defaultdict, Counter
 from pyspark import SparkContext
@@ -90,6 +91,7 @@ class HCluster:
                 if dist < min_dist:
                     min_dist = dist
                     labels[pidx] = idx
+            temp = copy.copy(updates[labels[pidx]])
             HCluster.vector_add(updates[labels[pidx]], point, num_dims)
             cluster_counts[labels[pidx]] += 1
         centers_new = HCluster.update_centroids(centers, centers_new, updates, cluster_counts)
@@ -179,11 +181,10 @@ class Runner:
         points = self.load_points(sc, file_path)
         points_sample = points[:27585]# random.Random().sample(points, 0.1)
         
-        clusters = HCluster(num_clusters * 3, num_seeds=2, num_iterations=5)
+        clusters = HCluster(num_clusters, num_seeds=2, num_iterations=5)
         clusters.fit(points_sample)
         print("Inertia: {}".format(clusters.inertia))
         # print("Cluster centers: {}".format(clusters.cluster_centers))
-        print("Number of clusters: {}".format(num_clusters * 3))
         print("Cluster counts: {}".format(Counter(clusters.labels)))
 
         # TODO: move clusters with single points or "very few" to RS
