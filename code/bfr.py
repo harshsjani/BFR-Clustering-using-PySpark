@@ -6,13 +6,13 @@ import random
 import sys
 import time
 
-from collections import defaultdict
+from collections import defaultdict, Counter
 from pyspark import SparkContext
 
 
 class HCluster:    
     def __init__(self, num_clusters, num_seeds, num_iterations):
-        self.n_clusters = num_clusters
+        self.num_clusters = num_clusters
         self.max_iterations = num_iterations
         self.num_seeds = num_seeds
 
@@ -44,7 +44,12 @@ class HCluster:
 
     @staticmethod
     def get_inertia(centers, points, labels):
-        pass
+        # Sum of squares distance from points to centers
+        inertia = 0
+
+        for idx, p in enumerate(points):
+            inertia += pow(Utils.euclidean_distance(p, centers[labels[idx]]), 2)
+        return inertia
 
     @staticmethod
     def vector_add(A1, A2, num_dims):
@@ -57,6 +62,9 @@ class HCluster:
         centers_new = [None] * len(centers)
 
         for cidx in range(len(centers)):
+            if cluster_counts[cidx] == 0:
+                centers_new[cidx] = centers[cidx]
+                continue
             dims = [0] * num_dims
             for dimidx in range(num_dims):
                 dims[dimidx] = updates[cidx][dimidx] / cluster_counts[cidx]
@@ -71,9 +79,10 @@ class HCluster:
         updates = defaultdict(lambda: [0] * num_dims)
         cluster_counts = defaultdict(int)
 
+        # print("Centers: {}".format(centers))
+
         for pidx, point in enumerate(points):
             min_dist = Utils.INF
-            centroid_id = None
 
             for idx, centroid in enumerate(centers):
                 dist = Utils.euclidean_distance(point, centroid)
@@ -81,34 +90,38 @@ class HCluster:
                 if dist < min_dist:
                     min_dist = dist
                     labels[pidx] = idx
-            HCluster.vector_add(updates[labels[pidx]], point)
+            HCluster.vector_add(updates[labels[pidx]], point, num_dims)
             cluster_counts[labels[pidx]] += 1
         centers_new = HCluster.update_centroids(centers, centers_new, updates, cluster_counts)
-        inertia = HCluster.get_inertia(centers_new, points, labels)
+        return centers, centers_new, labels
         
 
     def run(self, points, centers):
-        pass
+        centers_new = [None] * len(centers)
+
+        for i in range(self.max_iterations):
+            print("Running iteration #: {}".format(i + 1))
+            centers_new, centers, labels = self.single_iteration(points, centers, centers_new)
+        inertia = HCluster.get_inertia(centers_new, points, labels)
+
+        return centers, labels, inertia
 
     def fit(self, points):
         best_inertia = None
 
-        for _ in range(self._n_init):
-            centers = self._init_centroids(points)
+        for _ in range(self.num_seeds):
+            centers = self.get_centroids(points, self.num_clusters)
 
-            labels, inertia, centers, n_iter_ = self.run(points, centers)
+            centers, labels, inertia = self.run(points, centers)
 
             if best_inertia is None or inertia < best_inertia:
                 best_labels = labels
                 best_centers = centers
                 best_inertia = inertia
-                best_n_iter = n_iter_
 
-        self.cluster_centers_ = best_centers
-        self.labels_ = best_labels
-        self.inertia_ = best_inertia
-        self.n_iter_ = best_n_iter
-        return self
+        self.cluster_centers = best_centers
+        self.labels = best_labels
+        self.inertia = best_inertia
 
 class Utils:
     INF = 10 ** 12
@@ -150,40 +163,6 @@ class Utils:
         return centroids
 
 
-class KMeans:
-    def __init__(self, points, k: int) -> None:
-        self.points = points
-        self.num_clusters = k
-        self.num_dims = len(points[0])
-        self.clusters = defaultdict(set)
-        self.run()
-
-    def run(self) -> None:
-        centroids = Utils.get_centroids(self.points, self.num_clusters)
-        centroid_id_map = {centroid: idx for idx,
-                           centroid in enumerate(centroids)}
-        id_centroid_map = {idx: centroid for idx,
-                           centroid in enumerate(centroids)}
-
-        for point in self.points:
-            min_dist = Utils.INF
-            centroid_id = None
-
-            for centroid in centroids:
-                dist = Utils.euclidean_distance(point, centroid)
-
-                if dist < min_dist:
-                    min_dist = dist
-                    centroid_id = centroid_id_map[centroid]
-            self.clusters[centroid_id].add(point)
-
-    def print_cluster_data(self):
-        print("Number of clusters: {}".format(len(self.clusters)))
-        print("Number of points per cluster:")
-        for k in self.clusters:
-            print("{}: {}".format(k, len(self.clusters[k])))
-
-
 class Runner:
     def __init__(self) -> None:
         self.input_path = sys.argv[1]
@@ -197,14 +176,20 @@ class Runner:
         return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: list(map(lambda x: float(x), row.split(",")[1:]))).map(lambda row: tuple(row)).collect()
 
     def init_sets(self, sc, file_path, num_clusters):
-        points = set(self.load_points(sc, file_path))
-        points_sample = random.Random().sample(points, 0.1)
-        kmeans = KMeans(points_sample, num_clusters * 5)
+        points = self.load_points(sc, file_path)
+        points_sample = points[:27585]# random.Random().sample(points, 0.1)
+        
+        clusters = HCluster(num_clusters * 3, num_seeds=2, num_iterations=5)
+        clusters.fit(points_sample)
+        print("Inertia: {}".format(clusters.inertia))
+        # print("Cluster centers: {}".format(clusters.cluster_centers))
+        print("Number of clusters: {}".format(num_clusters * 3))
+        print("Cluster counts: {}".format(Counter(clusters.labels)))
 
         # TODO: move clusters with single points or "very few" to RS
-        rs_points = points - RS.points()
+        # rs_points = points - RS.points()
 
-        remaining_points = points - set(rs_points)
+        # remaining_points = points - set(rs_points)
 
         
 
@@ -214,10 +199,10 @@ class Runner:
         files = os.listdir(self.input_path)
         self.init_sets(sc, files[0], self.num_clusters)
 
-        for idx, file_path in enumerate(files[1:]):
-            points = self.load_points(sc, file_path)
-            kmeans = KMeans(points, self.num_clusters)
-            kmeans.print_cluster_data()
+        # for idx, file_path in enumerate(files[1:]):
+        #     points = self.load_points(sc, file_path)
+        #     kmeans = KMeans(points, self.num_clusters)
+        #     kmeans.print_cluster_data()
 
 
 if __name__ == "__main__":
