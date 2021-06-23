@@ -144,9 +144,17 @@ class Utils:
             sqsm += pow((p1[i] - p2[i]), 2)
         return math.sqrt(sqsm)
 
+    @staticmethod
+    def mahalanobis_distance(p, c, std):
+        N = len(p)
+        dist = 0
+        for i in range(N):
+            dist += pow((p[i] - c[i]) / std[i], 2)
+        return math.sqrt(dist)
+
 
 class DiscardSet:
-    def __init__(self, points) -> None:
+    def __init__(self, points, center) -> None:
         self.num_points = len(points)
         self.num_dims = len(points[0])
         self.dsums = [0] * self.num_dims
@@ -156,6 +164,13 @@ class DiscardSet:
             for i in range(self.num_dims):
                 self.dsums[i] += p[i]
                 self.dsqsums[i] += pow(p[i], 2)
+        self.center = center
+
+    def get_stds(self):
+        stds = [0 for _ in range(self.num_dims)]
+        for i in range(self.num_dims):
+            stds[i] = math.sqrt(self.dsqsums[i] / self.num_points - pow(self.dsums[i] / self.num_points, 2))
+        return stds
 
 class Runner:
     def __init__(self) -> None:
@@ -168,12 +183,13 @@ class Runner:
         self.discard_sets = []
         self.compressed_sets = []
         self.retained_sets = []
+        self.out_dict = {}
 
     def load_init_points(self, sc, file_path):
-        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: list(map(lambda x: float(x), row.split(",")[1:]))).map(lambda row: tuple(row)).collect()
+        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: (int(row[0]), list(map(lambda x: float(x), row[1:])))).mapValues(lambda row: tuple(row)).collectAsMap()
     
     def load_points(self, sc, file_path):
-        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: list(map(lambda x: float(x), row.split(",")[1:]))).map(lambda row: tuple(row))
+        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: (int(row[0]), list(map(lambda x: float(x), row[1:]))))
 
     def init_RS(self, points, labels, cluster_ctr):
         singleton_clusters = set()
@@ -185,7 +201,7 @@ class Runner:
             if label in singleton_clusters:
                 pass
 
-    def init_DSs(self, points, labels):
+    def init_DSs(self, points, labels, centers):
         N = len(points)
         ds_points = [[] for _ in range(self.num_clusters)]
 
@@ -195,10 +211,11 @@ class Runner:
             ds_points[label].append(point)
         
         for i in range(self.num_clusters):
-            self.discard_sets[i] = DiscardSet(ds_points[i])
+            self.discard_sets[i] = DiscardSet(ds_points[i], centers[i])
 
     def init_sets(self, sc, file_path, num_clusters):
-        points = self.load_points(sc, file_path)
+        points_with_idx = self.load_points(sc, file_path)
+        points = points_with_idx.values()
         num_points = len(points)
         fraction = 0.2
         sample = math.ceil(num_points * fraction)
@@ -214,7 +231,23 @@ class Runner:
 
         # remaining_points = points - set(rs_points)
 
-        
+    @staticmethod
+    def assign_to_ss(point, summarized_sets, alpha):
+        choice = None
+        smallest_dist = Utils.INF
+
+        for i in range(len(summarized_sets)):
+            ss = summarized_sets[i]
+            dist = Utils.mahalanobis_distance(point, ss.center, ss.get_stds())
+
+            if dist < alpha * math.sqrt(ss.num_dims) and dist < smallest_dist:
+                smallest_dist = dist
+                choice = i
+        return choice
+
+    def write_initial_labels(self, labels):
+        for idx, l in enumerate(labels):
+            self.out_dict[idx] = l
 
     def run(self):
         sc = SparkContext.getOrCreate()
@@ -224,11 +257,23 @@ class Runner:
         clusters = HCluster(self.num_clusters, 1, 5)
         init_points = self.load_init_points(sc, files[0])
         clusters.fit(init_points)
-        self.init_DSs(init_points, clusters.labels)
+        self.init_DSs(init_points, clusters.labels, clusters.cluster_centers)
+        self.write_initial_labels(clusters.labels)
         del init_points
 
         for idx, file_path in enumerate(files[1:]):
-            points = self.load_points(sc, file_path)
+            dss = self.discard_sets
+            pointsRDD = self.load_points(sc, file_path)
+            assigned = pointsRDD.map(lambda idx_point: (idx_point[0], Runner.assign_to_ss(idx_point[1], dss, alpha=2)))
+            rem_points = assigned.filter(lambda row: row[1] == None)
+            ds_assigned = assigned.filter(lambda row: row[1] != None)
+            self.out_dict.update(ds_assigned.collectAsMap())
+            rem_minus_one = rem_points.mapValues(lambda val: -1)
+            self.out_dict.update(rem_minus_one.collectAsMap())
+        
+        with open(self.cluster_out, "w+") as f:
+            json.dump(self.out_dict, f)
+
 
 
 if __name__ == "__main__":
