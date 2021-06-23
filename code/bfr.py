@@ -186,10 +186,10 @@ class Runner:
         self.out_dict = {}
 
     def load_init_points(self, sc, file_path):
-        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: (int(row[0]), list(map(lambda x: float(x), row[1:])))).mapValues(lambda row: tuple(row)).collectAsMap()
+        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: list(map(lambda x: float(x), row[1:]))).map(lambda row: tuple(row)).collect()
     
     def load_points(self, sc, file_path):
-        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: (int(row[0]), list(map(lambda x: float(x), row[1:]))))
+        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: (str(row[0]), list(map(lambda x: float(x), row[1:]))))
 
     def init_RS(self, points, labels, cluster_ctr):
         singleton_clusters = set()
@@ -211,7 +211,7 @@ class Runner:
             ds_points[label].append(point)
         
         for i in range(self.num_clusters):
-            self.discard_sets[i] = DiscardSet(ds_points[i], centers[i])
+            self.discard_sets.append(DiscardSet(ds_points[i], centers[i]))
 
     def init_sets(self, sc, file_path, num_clusters):
         points_with_idx = self.load_points(sc, file_path)
@@ -247,10 +247,11 @@ class Runner:
 
     def write_initial_labels(self, labels):
         for idx, l in enumerate(labels):
-            self.out_dict[idx] = l
+            self.out_dict[str(idx)] = l
 
     def run(self):
         sc = SparkContext.getOrCreate()
+        sc.setLogLevel("OFF")
 
         files = os.listdir(self.input_path)
         # self.init_sets(sc, files[0], self.num_clusters)
@@ -259,9 +260,11 @@ class Runner:
         clusters.fit(init_points)
         self.init_DSs(init_points, clusters.labels, clusters.cluster_centers)
         self.write_initial_labels(clusters.labels)
+        print("Number of assigned points in out dict: {}".format(len(self.out_dict)))
         del init_points
 
         for idx, file_path in enumerate(files[1:]):
+            print("Processing index: {}/{}".format(idx, len(files) - 1))
             dss = self.discard_sets
             pointsRDD = self.load_points(sc, file_path)
             assigned = pointsRDD.map(lambda idx_point: (idx_point[0], Runner.assign_to_ss(idx_point[1], dss, alpha=2)))
