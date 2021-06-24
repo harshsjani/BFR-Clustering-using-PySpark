@@ -6,8 +6,8 @@ sc = SparkContext(appName="INF553HW5", master="local[*]")
 sc.setLogLevel("WARN")
 sc.setLogLevel("ERROR")
 
-clustering_file_path = "groundtruth.json"
-label_path = "testfile.json"
+clustering_file_path = "data/cluster1.json"
+label_path = "test1_clust_out"
 
 ground_truth = sc.textFile(label_path).map(lambda line: json.loads(line)). \
     flatMap(lambda line: [(index, label) for index, label in line.items()]). \

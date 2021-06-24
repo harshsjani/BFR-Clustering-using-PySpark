@@ -32,7 +32,7 @@ with open(my_label_path) as f:
 print("Number of ground truth assignments: {}".format(len(ground_truth_labels)))
 print("Number of predicted assignments: {}".format(len(my_labels)))
 
-gt_feature = [None] * len(ground_truth_labels)
+gt_feature = [-1] * len(ground_truth_labels)
 for k, v in ground_truth_labels.items():
     gt_feature[int(k)] = v
 

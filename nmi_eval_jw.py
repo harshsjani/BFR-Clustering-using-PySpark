@@ -6,8 +6,8 @@ import json
 
 
 def main():
-    true_label_path = "groundtruth.json"
-    predict_label_path = "predict.json"
+    true_label_path = "data/cluster1.json"
+    predict_label_path = "test1_clust_out"
 
     with open(true_label_path, "r") as f:
         true_label_dict = json.load(f)

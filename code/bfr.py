@@ -85,8 +85,6 @@ class HCluster:
         updates = defaultdict(lambda: [0] * num_dims)
         cluster_counts = defaultdict(int)
 
-        # print("Centers: {}".format(centers))
-
         for pidx, point in enumerate(points):
             min_dist = Utils.INF
 
@@ -101,7 +99,6 @@ class HCluster:
         centers_new = HCluster.update_centroids(centers, centers_new, updates, cluster_counts)
         return centers, centers_new, labels
         
-
     def run(self, points, centers):
         centers_new = [None] * len(centers)
 
@@ -184,9 +181,6 @@ class Runner:
         self.compressed_sets = []
         self.retained_sets = []
         self.out_dict = {}
-
-    def load_init_points(self, sc, file_path):
-        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: list(map(lambda x: float(x), row[1:]))).map(lambda row: tuple(row)).collect()
     
     def load_points(self, sc, file_path):
         return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: (str(row[0]), list(map(lambda x: float(x), row[1:]))))
@@ -213,23 +207,34 @@ class Runner:
         for i in range(self.num_clusters):
             self.discard_sets.append(DiscardSet(ds_points[i], centers[i]))
 
-    def init_sets(self, sc, file_path, num_clusters):
-        points_with_idx = self.load_points(sc, file_path)
+    def init_sets(self, pointsRDD, file_path, num_clusters):
+        points_with_idx = pointsRDD.collectAsMap()
         points = points_with_idx.values()
         num_points = len(points)
         fraction = 0.2
         sample = math.ceil(num_points * fraction)
-        points_sample = points[:sample]# random.Random().sample(points, 0.1)
+        points_sample = points[:sample]
         
         clusters = HCluster(num_clusters * 3, num_seeds=1, num_iterations=1)
         clusters.fit(points_sample)
         
         ctr = Counter(clusters.labels)
-        # TODO: move clusters with single points or "very few" to RS
-        # self.init_RS(points_sample, clusters.labels, ctr)
-        # rs_points = points - RS.points()
 
-        # remaining_points = points - set(rs_points)
+        outlier_labels = set()
+
+        for k, v in ctr:
+            if v == 1:
+                outlier_labels.add(k)
+        
+        inlier_points = {}
+        outlier_points = {}
+        for k, v in points_with_idx:
+            if k not in outlier_labels:
+                inlier_points[k] = v
+            else:
+                outlier_labels[k] = v
+        for eidx, (idx, point) in enumerate(inlier_points.items()):
+
 
     @staticmethod
     def assign_to_ss(point, summarized_sets, alpha):
@@ -245,37 +250,36 @@ class Runner:
                 choice = i
         return choice
 
-    def write_initial_labels(self, labels):
-        for idx, l in enumerate(labels):
-            self.out_dict[str(idx)] = l
-
     def run(self):
         sc = SparkContext.getOrCreate()
         sc.setLogLevel("OFF")
 
-        files = os.listdir(self.input_path)
-        # self.init_sets(sc, files[0], self.num_clusters)
-        clusters = HCluster(self.num_clusters, 1, 5)
-        init_points = self.load_init_points(sc, files[0])
-        clusters.fit(init_points)
+        files = list(sorted(os.listdir(self.input_path)))
+        print("Files: {}".format(files))
+        
         self.init_DSs(init_points, clusters.labels, clusters.cluster_centers)
-        self.write_initial_labels(clusters.labels)
-        print("Number of assigned points in out dict: {}".format(len(self.out_dict)))
-        del init_points
 
-        for idx, file_path in enumerate(files[1:]):
-            print("Processing index: {}/{}".format(idx, len(files) - 1))
-            dss = self.discard_sets
+        for idx, file_path in enumerate(files):
+            print("Processing index: {}/{}".format(idx + 1, len(files)))
             pointsRDD = self.load_points(sc, file_path)
+            
+            # For the first round, we want to do some extra stuff
+            if idx == 0:
+                pass
+
+            dss = self.discard_sets
             assigned = pointsRDD.map(lambda idx_point: (idx_point[0], Runner.assign_to_ss(idx_point[1], dss, alpha=2)))
             rem_points = assigned.filter(lambda row: row[1] == None)
             ds_assigned = assigned.filter(lambda row: row[1] != None)
             self.out_dict.update(ds_assigned.collectAsMap())
             rem_minus_one = rem_points.mapValues(lambda val: -1)
             self.out_dict.update(rem_minus_one.collectAsMap())
+            print("Number of assigned points in out dict: {}".format(len(self.out_dict)))
         
         with open(self.cluster_out, "w+") as f:
             json.dump(self.out_dict, f)
+        with open(self.intermediate_out, "w+") as f:
+            f.write(",".join(self.intermediate_header))
 
 
 
