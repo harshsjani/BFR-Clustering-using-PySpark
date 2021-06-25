@@ -159,7 +159,7 @@ class Utils:
         stds = []
         N = cs1.num_points + cs2.num_points
 
-        for i in range(cs1.num_points):
+        for i in range(cs1.num_dims):
             dsums = cs1.dsums[i] + cs2.dsums[i]
             dsqsums = cs1.dsqsums[i] + cs2.dsqsums[i]
 
@@ -284,7 +284,7 @@ class Runner:
             for cs1k, cs2k in combinations(kvs, 2):
                 cs1 = kvs[cs1k]
                 cs2 = kvs[cs2k]
-                if self.cs_near(cs1, cs2, 3):
+                if self.cs_near(cs1, cs2, 2):
                     cs1.merge(cs2)
                     kvs.pop(cs2k)
                     kvs[cs1k] = cs1
