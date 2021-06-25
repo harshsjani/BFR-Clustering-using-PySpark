@@ -33,6 +33,8 @@ class HCluster:
             used_idx = None
 
             for idx, point in pwi:
+                if idx in used_points:
+                    continue
                 if not idx in used_points:
                     min_dist = Utils.INF
                     for x in range(i):
@@ -174,6 +176,7 @@ class SummarizedSet:
         self.num_dims = len(points[0])
         self.dsums = [0] * self.num_dims
         self.dsqsums = [0] * self.num_dims
+        self.point_indices = set()
         
         for p in points:
             for i in range(self.num_dims):
@@ -208,11 +211,13 @@ class SummarizedSet:
 
     def merge(self, other):
         self.num_points += other.num_points
+        self.point_indices |= other.point_indices
         
         for i in range(self.num_dims):
             self.dsums[i] += other.dsums[i]
             self.dsqsums[i] += other.dsqsums[i]
             self.center[i] = self.dsums[i] / self.num_points
+
 
 class Runner:
     def __init__(self) -> None:
@@ -291,10 +296,16 @@ class Runner:
                     can_merge = True
                     num_merged += 1
                     break
+        css = []
+        for cs in kvs.values():
+            css.append(cs)
+        self.compressed_sets = css
         print("Merged these many CS: {}".format(num_merged))
 
     def cluster_rs(self):
         clustering = HCluster(self.num_clusters * 3, num_seeds=1, num_iterations=5)
+        print("Clustering RS now.")
+        print("Retained set: {}".format(self.retained_sets))
         clustering.fit(self.retained_sets)
 
         ctr = Counter(clustering.labels.values())
@@ -316,6 +327,23 @@ class Runner:
 
         # Reuse RS
         self.retained_sets = outlier_points
+
+    def merge_into_ds(self):
+        for pidx, point in self.retained_sets:
+            label = Runner.assign_to_ss(point, self.discard_sets, 3)
+
+            if label is not None:
+                self.discard_sets[label].update(point)
+            else:
+                self.out_dict[pidx] = -1
+        
+        for cs in self.compressed_sets:
+            center = cs.center
+            label = Runner.assign_to_ss(center, self.discard_sets, 10 ** 18)
+
+            for pidx in cs.point_indices:
+                self.out_dict[pidx] = label
+            self.discard_sets[label].merge(cs)
 
     def init_sets(self, pointsRDD):
         pwi = pointsRDD.collect()
@@ -397,8 +425,9 @@ class Runner:
 
     def update_SSs(self, assignments, ss):
         # assignments: idx, point, label
-        for _, point, label in assignments:
+        for pidx, point, label in assignments:
             ss[label].update(point)
+            ss[label].point_indices.add(pidx)
 
     @staticmethod
     def assign_to_ss(point, summarized_sets, alpha):
@@ -452,13 +481,17 @@ class Runner:
                 self.retained_sets.extend(rem_points)
                 
                 # Step 11
-                self.cluster_rs()
+                # self.cluster_rs()
 
                 # Step 12
                 self.merge_css()
 
                 # rem_minus_one = rem_points.mapValues(lambda val: -1)
                 # self.out_dict.update(rem_minus_one.collectAsMap())
+
+                # Do last file stuff
+                if idx == len(files) - 1:
+                    self.merge_into_ds()
 
             print("Number of assigned points in out dict: {}".format(len(self.out_dict)))
         
