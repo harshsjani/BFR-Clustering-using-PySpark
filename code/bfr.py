@@ -252,8 +252,7 @@ class Runner:
         clustering.fit(inlier_points)
 
         print("Number of label keys: {}".format(len(clustering.labels)))
-        print("Label keys: {}".format(list(clustering.labels.keys())[:1000]))
-        self.init_DSs(pwi, clustering.labels, clustering.cluster_centers)
+        self.init_DSs(inlier_points, clustering.labels, clustering.cluster_centers)
 
         # Write initial assignment
         for idx, _ in inlier_points:
