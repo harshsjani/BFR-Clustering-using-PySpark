@@ -105,7 +105,7 @@ class HCluster:
         for i in range(self.max_iterations):
             print("Running iteration #: {}".format(i + 1))
             centers_new, centers, labels = self.single_iteration(pwi, centers, centers_new)
-        inertia = HCluster.get_inertia(centers_new, pwi, labels)
+        inertia = 0#HCluster.get_inertia(centers_new, pwi, labels)
 
         return centers, labels, inertia
 
@@ -213,8 +213,10 @@ class Runner:
     def init_sets(self, pointsRDD):
         pwi = pointsRDD.collect()
         num_points = len(pwi)
+        print("Total number of points: {}".format(num_points))
         fraction = 0.2
         sample_idx = math.ceil(num_points * fraction)
+        print("Num points sampled: {}".format(sample_idx + 1))
         points_sample = pwi[:sample_idx]
         
         clusters = HCluster(self.num_clusters * 3, num_seeds=1, num_iterations=5)
@@ -228,6 +230,8 @@ class Runner:
             if v == 1:
                 outlier_labels.add(k)
         
+        print("Outlier labels: {}".format(outlier_labels))
+
         inlier_points = []
         outlier_points = []
 
@@ -241,11 +245,14 @@ class Runner:
         
         inlier_points.extend(pwi[sample_idx:])
 
+        print("Outlier points: {}".format(outlier_points))
+
         print("Number of inlier points + rest: {}".format(len(inlier_points)))
         clustering = HCluster(self.num_clusters, num_seeds=1, num_iterations=5)
         clustering.fit(inlier_points)
 
         print("Number of label keys: {}".format(len(clustering.labels)))
+        print("Label keys: {}".format(list(clustering.labels.keys())[:1000]))
         self.init_DSs(pwi, clustering.labels, clustering.cluster_centers)
 
         # Write initial assignment
