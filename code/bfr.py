@@ -24,7 +24,7 @@ class HCluster:
         N = len(pwi)
         init_idx = random.randint(0, N)
         centroids[0] = pwi[init_idx][1]
-        used_points.add(init_idx)
+        used_points.add(pwi[init_idx][0])
 
         for i in range(1, num_clusters):
             maxdist = 0
@@ -94,8 +94,10 @@ class HCluster:
                 if dist < min_dist:
                     min_dist = dist
                     labels[pidx] = idx
+            
             HCluster.vector_add(updates[labels[pidx]], point, num_dims)
             cluster_counts[labels[pidx]] += 1
+        
         centers_new = HCluster.update_centroids(centers, centers_new, updates, cluster_counts)
         return centers, centers_new, labels
         
@@ -147,11 +149,12 @@ class Utils:
         N = len(p)
         dist = 0
         for i in range(N):
-            dist += pow((p[i] - c[i]) / std[i], 2)
+            if std[i] != 0:
+                dist += pow((p[i] - c[i]) / std[i], 2)
         return math.sqrt(dist)
 
 
-class DiscardSet:
+class SummarizedSet:
     def __init__(self, points, center) -> None:
         self.num_points = len(points)
         self.num_dims = len(points[0])
@@ -170,6 +173,24 @@ class DiscardSet:
             stds[i] = math.sqrt(self.dsqsums[i] / self.num_points - pow(self.dsums[i] / self.num_points, 2))
         return stds
 
+    def update(self, point):
+        self.num_points += 1
+        
+        for i in range(self.num_dims):
+            self.dsums[i] += point[i]
+            self.dsqsums[i] += pow(point[i], 2)
+            self.center[i] = self.dsums[i] / self.num_points
+
+    def __str__(self) -> str:
+        ret = []
+        ret.append("------ Summarized Set Info ------")
+        ret.append("Number of points: {}".format(self.num_points))
+        ret.append("Number of dimensions: {}".format(self.num_dims))
+        ret.append("Dimension sums: {}".format(self.dsums))
+        ret.append("Dimension squared sums: {}".format(self.dsqsums))
+        ret.append("Standard deviations: {}".format(self.get_stds()))
+        ret.append("~~~~~~~~~~~~~~~~~~~~~")
+        return "\n".join(ret)
 
 class Runner:
     def __init__(self) -> None:
@@ -197,18 +218,20 @@ class Runner:
             if label in singleton_clusters:
                 pass
 
-    def init_DSs(self, pwi, labels, centers):
+    def init_summarized_sets(self, pwi, labels, centers, summarized_sets):
         N = len(pwi)
-        ds_points = [[] for _ in range(self.num_clusters)]
+        ds_points = defaultdict(list)
+        seen_labels = set()
 
         for i in range(N):
             pidx = pwi[i][0]
             point = pwi[i][1]
             label = labels[pidx]
+            seen_labels.add(label)
             ds_points[label].append(point)
         
-        for i in range(self.num_clusters):
-            self.discard_sets.append(DiscardSet(ds_points[i], centers[i]))
+        for label in seen_labels:
+            summarized_sets.append(SummarizedSet(ds_points[label], centers[label]))
 
     def init_sets(self, pointsRDD):
         pwi = pointsRDD.collect()
@@ -218,11 +241,12 @@ class Runner:
         sample_idx = math.ceil(num_points * fraction)
         print("Num points sampled: {}".format(sample_idx + 1))
         points_sample = pwi[:sample_idx]
-        
+
         clusters = HCluster(self.num_clusters * 3, num_seeds=1, num_iterations=5)
         clusters.fit(points_sample)
         
         ctr = Counter(clusters.labels.values())
+        print("Cluster counts: {}".format(ctr))
 
         outlier_labels = set()
 
@@ -245,19 +269,52 @@ class Runner:
         
         inlier_points.extend(pwi[sample_idx:])
 
-        print("Outlier points: {}".format(outlier_points))
-
         print("Number of inlier points + rest: {}".format(len(inlier_points)))
-        clustering = HCluster(self.num_clusters, num_seeds=1, num_iterations=5)
+        clustering = HCluster(self.num_clusters * 2, num_seeds=1, num_iterations=5)
         clustering.fit(inlier_points)
 
+        ctr = Counter(clustering.labels.values())
+
+        print("New cluster counts: {}".format(ctr))
+        most_common_labels = set(map(lambda x: x[0], ctr.most_common(self.num_clusters)))
+        print("Most common labels: " + str(most_common_labels))
+        init_ds_points = []
+        init_cs_points = []
+        ds_centers = {x : clustering.cluster_centers[x] for x in most_common_labels}
+        cs_centers = {}
+
+        for idx, point in inlier_points:
+            label = clustering.labels[idx]
+            if label in most_common_labels:
+                init_ds_points.append((idx, point))
+            elif ctr[label] == 1:
+                outlier_points.append((idx, point))
+            else:
+                init_cs_points.append((idx, point))
+                cs_centers[label] = clustering.cluster_centers[label]
+
         print("Number of label keys: {}".format(len(clustering.labels)))
-        self.init_DSs(inlier_points, clustering.labels, clustering.cluster_centers)
+        self.init_summarized_sets(init_ds_points, clustering.labels, ds_centers, self.discard_sets)
+
+        # Now init the CSs
+        self.init_summarized_sets(init_cs_points, clustering.labels, cs_centers, self.compressed_sets)
+
+        # Finally, the RS
+        self.retained_sets.extend(outlier_points)
+
+        print ("DS point counts:")
+        for ds in self.discard_sets:
+            print(ds.num_points)
 
         # Write initial assignment
         for idx, _ in inlier_points:
             label = clustering.labels[idx]
             self.out_dict[idx] = label
+
+    def update_SSs(self, assignments, ss):
+        # assignments: idx, point, label
+        for _, point, label in assignments:
+            ss[label].update(point)
 
     @staticmethod
     def assign_to_ss(point, summarized_sets, alpha):
@@ -289,19 +346,26 @@ class Runner:
                 self.init_sets(pointsRDD)
             else:
                 dss = self.discard_sets
-                assigned = pointsRDD.map(lambda idx_point: (idx_point[0], Runner.assign_to_ss(idx_point[1], dss, alpha=2)))
-                rem_points = assigned.filter(lambda row: row[1] == None)
-                ds_assigned = assigned.filter(lambda row: row[1] != None)
-                self.out_dict.update(ds_assigned.collectAsMap())
+                assigned = pointsRDD.map(lambda idx_point: (idx_point[0], idx_point[1], Runner.assign_to_ss(idx_point[1], dss, alpha=3)))
+                rem_points = assigned.filter(lambda row: row[2] == None).map(lambda x: (x[0], x[2]))
+                ds_assigned = assigned.filter(lambda row: row[2] != None)
+                self.out_dict.update(ds_assigned.map(lambda x: (x[0], x[2])).collectAsMap())
                 rem_minus_one = rem_points.mapValues(lambda val: -1)
                 self.out_dict.update(rem_minus_one.collectAsMap())
+
+                # Update the discard sets now
+                self.update_SSs(ds_assigned.collect(), self.discard_sets)
+
             print("Number of assigned points in out dict: {}".format(len(self.out_dict)))
         
         with open(self.cluster_out, "w+") as f:
             json.dump(self.out_dict, f)
         with open(self.intermediate_out, "w+") as f:
             f.write(",".join(self.intermediate_header))
-
+        
+        print("Points per DS:")
+        for ds in self.discard_sets:
+            print(ds.num_points)
 
 
 if __name__ == "__main__":
