@@ -7,6 +7,7 @@ import sys
 import time
 import copy
 
+from itertools import combinations
 from collections import defaultdict, Counter
 from pyspark import SparkContext
 
@@ -153,6 +154,19 @@ class Utils:
                 dist += pow((p[i] - c[i]) / std[i], 2)
         return math.sqrt(dist)
 
+    @staticmethod
+    def union_stds(cs1, cs2):
+        stds = []
+        N = cs1.num_points + cs2.num_points
+
+        for i in range(cs1.num_points):
+            dsums = cs1.dsums[i] + cs2.dsums[i]
+            dsqsums = cs1.dsqsums[i] + cs2.dsqsums[i]
+
+            variance = dsqsums / N - pow((dsums / N), 2)
+            stds.append(math.sqrt(variance))
+        return stds
+
 
 class SummarizedSet:
     def __init__(self, points, center) -> None:
@@ -191,6 +205,14 @@ class SummarizedSet:
         ret.append("Standard deviations: {}".format(self.get_stds()))
         ret.append("~~~~~~~~~~~~~~~~~~~~~")
         return "\n".join(ret)
+
+    def merge(self, other):
+        self.num_points += other.num_points
+        
+        for i in range(self.num_dims):
+            self.dsums[i] += other.dsums[i]
+            self.dsqsums[i] += other.dsqsums[i]
+            self.center[i] = self.dsums[i] / self.num_points
 
 class Runner:
     def __init__(self) -> None:
@@ -233,8 +255,43 @@ class Runner:
         for label in seen_labels:
             summarized_sets.append(SummarizedSet(ss_points[label], centers[label]))
 
-    def merge_cs(self):
+    def cs_near(self, cs1, cs2, alpha):
+        num_dims = cs1.num_dims
+        stds1 = cs1.get_stds()
+        stds2 = cs2.get_stds()
+        union_stds = Utils.union_stds(cs1, cs2)
+
+        for i in range(num_dims):
+            std1 = stds1[i]
+            std2 = stds2[i]
+            stdsum = std1 + std2
+            
+            if not (union_stds[i] < alpha * (stdsum)):
+                return False
+        return True
+
+    def merge_css(self):
         N = len(self.compressed_sets)
+        print("Merging compressed sets of size: {}".format(N))
+        kvs = {idx : x for idx, x in enumerate(self.compressed_sets)}
+
+        can_merge = True
+        num_merged = 0
+
+        while can_merge and len(kvs) > 1:
+            can_merge = False
+
+            for cs1k, cs2k in combinations(kvs, 2):
+                cs1 = kvs[cs1k]
+                cs2 = kvs[cs2k]
+                if self.cs_near(cs1, cs2, 3):
+                    cs1.merge(cs2)
+                    kvs.pop(cs2k)
+                    kvs[cs1k] = cs1
+                    can_merge = True
+                    num_merged += 1
+                    break
+        print("Merged these many CS: {}".format(num_merged))
 
     def cluster_rs(self):
         clustering = HCluster(self.num_clusters * 3, num_seeds=1, num_iterations=5)
@@ -398,7 +455,7 @@ class Runner:
                 self.cluster_rs()
 
                 # Step 12
-                self.merge_cs()
+                self.merge_css()
 
                 # rem_minus_one = rem_points.mapValues(lambda val: -1)
                 # self.out_dict.update(rem_minus_one.collectAsMap())
