@@ -85,7 +85,6 @@ class HCluster:
         centers_new = [None] * len(centers)
 
         for i in range(self.max_iterations):
-            print("Running iteration #: {}".format(i + 1))
             centers_new, centers, labels = self.single_iteration(pwi, centers, centers_new)
 
         return centers, labels, 0
@@ -197,10 +196,15 @@ class Runner:
         self.intermediate_out = sys.argv[4]
         self.intermediate_header = ["round_id", "nof_cluster_discard", "nof_point_discard",
                                     "nof_cluster_compression", "nof_point_compression", "nof_point_retained"]
+        self.intermediate_rows = []
         self.discard_sets = []
         self.compressed_sets = []
         self.retained_set = []
         self.out_dict = {}
+        self.nof_point_discard = 0
+        self.nof_cluster_compression = 0
+        self.nof_point_compression = 0
+        self.nof_point_retained = 0
     
     def load_points(self, file_path):
         with open(file_path) as f:
@@ -211,6 +215,13 @@ class Runner:
                 pt = list(map(float, pt.split(",")))
                 lines[idx] = (pidx, pt)
         return lines
+
+    def get_cs_point_count(self):
+        nof_cs_points = 0
+
+        for cs in self.compressed_sets:
+            nof_cs_points += len(cs.point_indices)
+        return nof_cs_points
 
     def init_summarized_sets(self, pwi, labels, centers, summarized_sets):
         N = len(pwi)
@@ -245,6 +256,37 @@ class Runner:
             self.compressed_sets.append(SummarizedSet(ss_points[label], centers[label]))
             self.compressed_sets[-1].point_indices = point_indices_per_set[label]
 
+    def cluster_rs(self):
+        points = self.retained_set
+        num_res = len(points)
+        clst = HCluster(self.num_clusters * 5, 5)
+        clst.fit(points)
+
+        ctr = Counter(clst.labels.values())
+
+        outlier_labels = set()
+        for k, v in ctr.items():
+            if v == 1:
+                outlier_labels.add(k)
+
+        cs_points = []
+        
+        self.retained_set = []
+
+        for i in range(num_res):
+            pidx, _ = points[i]
+            label = clst.labels[pidx]
+
+            if label in outlier_labels:
+                self.retained_set.append(points[i])
+            else:
+                cs_points.append(points[i])
+        
+        clst = HCluster(self.num_clusters, 5)
+        clst.fit(cs_points)
+        
+        self.init_compressed_sets(cs_points, clst.labels, clst.cluster_centers)
+
     def merge_css(self):
         N = len(self.compressed_sets)
         print("Merging compressed sets of size: {}".format(N))
@@ -277,6 +319,20 @@ class Runner:
         self.compressed_sets = css
         print("Merged these many CS: {}".format(num_merged))
 
+    def int_rs_to_ds(self):
+        rs = []
+        
+        for pidx, point in self.retained_set:
+            label = self.assign_to_ss(point, self.discard_sets, 4)
+
+            if label is not None:
+                self.discard_sets[label].update(point)
+                self.out_dict[pidx] = label
+                self.nof_point_discard += 1
+            else:
+                rs.append((pidx, point))
+        self.retained_set = rs
+
     def merge_into_ds(self):
         print("Number of retained set points at end: {}".format(len(self.retained_set)))
         for pidx, point in self.retained_set:
@@ -285,6 +341,7 @@ class Runner:
             if label is not None:
                 self.discard_sets[label].update(point)
                 self.out_dict[pidx] = label
+                self.nof_point_discard += 1
             else:
                 self.out_dict[pidx] = -1
         
@@ -294,6 +351,7 @@ class Runner:
 
             for pidx in cs.point_indices:
                 self.out_dict[pidx] = label
+                self.nof_point_discard += 1
             self.discard_sets[label].merge(cs)
 
     def update_SSs(self, assignments, ss):
@@ -328,6 +386,7 @@ class Runner:
             if label:
                 self.discard_sets[label].update(point[1])
                 self.out_dict[point[0]] = label
+                self.nof_point_discard += 1
             else:
                 self.retained_set.append(point)
 
@@ -348,9 +407,7 @@ class Runner:
             if v == 1:
                 outlier_labels.add(k)
 
-        ds_points = defaultdict(list)
         inlier_points = []
-        rem_points = []
         
         for i in range(sample):
             pidx, _ = points_sample[i]
@@ -367,11 +424,9 @@ class Runner:
         self.init_summarized_sets(inlier_points, clst.labels, clst.cluster_centers, self.discard_sets)
         for pidx, _ in inlier_points:
             self.out_dict[pidx] = clst.labels[pidx]
+            self.nof_point_discard += 1
         
         self.assign_dsrsout(points_rest)
-
-        for ds in self.discard_sets:
-            print("{}".format(ds.num_points))
 
     def run(self):
         files = list(sorted(os.listdir(self.input_path)))
@@ -391,17 +446,26 @@ class Runner:
                 # Do last file stuff
                 if idx == len(files) - 1:
                     self.merge_into_ds()
+                    self.retained_set = []
+                else:
+                    self.int_rs_to_ds()
 
+            # Write intermediate stuff
+            self.intermediate_rows.append([
+                idx + 1, self.num_clusters,
+                self.nof_point_discard,
+                len(self.compressed_sets),
+                self.get_cs_point_count(),
+                len(self.retained_set)
+                ])
             print("Number of assigned points in out dict: {}".format(len(self.out_dict)))
         
         with open(self.cluster_out, "w+") as f:
             json.dump(self.out_dict, f)
         with open(self.intermediate_out, "w+") as f:
-            f.write(",".join(self.intermediate_header))
-        
-        print("Points per DS:")
-        for ds in self.discard_sets:
-            print(ds.num_points)
+            writer = csv.writer(f)
+            writer.writerow(self.intermediate_header)
+            writer.writerows(self.intermediate_rows)
 
 
 if __name__ == "__main__":
