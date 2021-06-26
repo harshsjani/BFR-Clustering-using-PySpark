@@ -23,6 +23,9 @@ for selected_idx in range(len(gt_paths)):
     ground_truth_labels_path = gt_paths[selected_idx]
     my_label_path = my_paths[selected_idx]
 
+    print("===============================================")
+    print("Processing file: {}".format(my_label_path))
+
     with open(ground_truth_labels_path) as f:
         ground_truth_labels = json.load(f)
     with open(my_label_path) as f:
@@ -41,3 +44,4 @@ for selected_idx in range(len(gt_paths)):
 
     normalized_mutual_info = normalized_mutual_info_score(gt_feature, my_feature)
     print("The nmi for file {} is: {}".format(my_paths[selected_idx], normalized_mutual_info))
+    print("===============================================")

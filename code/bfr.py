@@ -260,6 +260,24 @@ class Runner:
         for label in seen_labels:
             summarized_sets.append(SummarizedSet(ss_points[label], centers[label]))
 
+    def init_compressed_sets(self, pwi, labels, centers):
+        N = len(pwi)
+        ss_points = defaultdict(list)
+        point_indices_per_set = defaultdict(set)
+        seen_labels = set()
+
+        for i in range(N):
+            pidx = pwi[i][0]
+            point = pwi[i][1]
+            label = labels[pidx]
+            seen_labels.add(label)
+            ss_points[label].append(point)
+            point_indices_per_set[label].add(pidx)
+        
+        for label in seen_labels:
+            self.compressed_sets.append(SummarizedSet(ss_points[label], centers[label]))
+            self.compressed_sets[-1].point_indices = point_indices_per_set[label]
+
     def cs_near(self, cs1, cs2, alpha):
         num_dims = cs1.num_dims
         stds1 = cs1.get_stds()
@@ -323,14 +341,15 @@ class Runner:
                 cs_centers[label] = clustering.cluster_centers[label]
 
         # Add more CS
-        self.init_summarized_sets(init_cs_points, clustering.labels, cs_centers, self.compressed_sets)
+        self.init_compressed_sets(init_cs_points, clustering.labels, cs_centers)
 
         # Reuse RS
         self.retained_sets = outlier_points
 
     def merge_into_ds(self):
+        print("Number of retained set points at end: {}".format(len(self.retained_sets)))
         for pidx, point in self.retained_sets:
-            label = Runner.assign_to_ss(point, self.discard_sets, 3)
+            label = Runner.assign_to_ss(point, self.discard_sets, 4)
 
             if label is not None:
                 self.discard_sets[label].update(point)
@@ -349,53 +368,23 @@ class Runner:
         pwi = pointsRDD.collect()
         num_points = len(pwi)
         print("Total number of points: {}".format(num_points))
-        fraction = 0.2
-        sample_idx = math.ceil(num_points * fraction)
-        print("Num points sampled: {}".format(sample_idx + 1))
-        points_sample = pwi[:sample_idx]
-
-        clusters = HCluster(self.num_clusters * 3, num_seeds=1, num_iterations=5)
-        clusters.fit(points_sample)
         
-        ctr = Counter(clusters.labels.values())
-        print("Cluster counts: {}".format(ctr))
-
-        outlier_labels = set()
-
-        for k, v in ctr.items():
-            if v == 1:
-                outlier_labels.add(k)
-        
-        print("Outlier labels: {}".format(outlier_labels))
-
-        inlier_points = []
-        outlier_points = []
-
-        for point_with_idx in points_sample:
-            idx = point_with_idx[0]
-
-            if clusters.labels[idx] not in outlier_labels:
-                inlier_points.append(point_with_idx)
-            else:
-                outlier_points.append(point_with_idx)
-        
-        inlier_points.extend(pwi[sample_idx:])
-
-        print("Number of inlier points + rest: {}".format(len(inlier_points)))
-        clustering = HCluster(self.num_clusters * 2, num_seeds=1, num_iterations=5)
-        clustering.fit(inlier_points)
+        clustering = HCluster(self.num_clusters * 3, num_seeds=1, num_iterations=5)
+        clustering.fit(pwi)
 
         ctr = Counter(clustering.labels.values())
 
         print("New cluster counts: {}".format(ctr))
         most_common_labels = set(map(lambda x: x[0], ctr.most_common(self.num_clusters)))
-        print("Most common labels: " + str(most_common_labels))
+        
         init_ss_points = []
         init_cs_points = []
+        outlier_points = []
+        
         ds_centers = {x : clustering.cluster_centers[x] for x in most_common_labels}
         cs_centers = {}
 
-        for idx, point in inlier_points:
+        for idx, point in pwi:
             label = clustering.labels[idx]
             if label in most_common_labels:
                 init_ss_points.append((idx, point))
@@ -409,7 +398,7 @@ class Runner:
         self.init_summarized_sets(init_ss_points, clustering.labels, ds_centers, self.discard_sets)
 
         # Now init the CSs
-        self.init_summarized_sets(init_cs_points, clustering.labels, cs_centers, self.compressed_sets)
+        self.init_compressed_sets(init_cs_points, clustering.labels, cs_centers)
 
         # Finally, the RS
         self.retained_sets.extend(outlier_points)
@@ -419,9 +408,10 @@ class Runner:
             print(ds.num_points)
 
         # Write initial assignment
-        for idx, _ in inlier_points:
+        for idx, _ in pwi:
             label = clustering.labels[idx]
-            self.out_dict[idx] = label
+            if label in most_common_labels:
+                self.out_dict[idx] = label
 
     def update_SSs(self, assignments, ss):
         # assignments: idx, point, label
@@ -438,7 +428,7 @@ class Runner:
             ss = summarized_sets[i]
             dist = Utils.mahalanobis_distance(point, ss.center, ss.get_stds())
 
-            if dist < alpha * math.sqrt(ss.num_dims) and dist < smallest_dist:
+            if dist < smallest_dist and dist < alpha * math.sqrt(ss.num_dims):
                 smallest_dist = dist
                 choice = i
         return choice
@@ -461,7 +451,7 @@ class Runner:
                 dss = self.discard_sets
                 css = self.compressed_sets
                 assigned = pointsRDD.map(lambda idx_point: (
-                    idx_point[0], idx_point[1], Runner.assign_to_ss(idx_point[1], dss, alpha=2)))
+                    idx_point[0], idx_point[1], Runner.assign_to_ss(idx_point[1], dss, alpha=3)))
                 
                 rem_for_cs_points = assigned.filter(lambda row: row[2] == None)
                 
@@ -477,17 +467,11 @@ class Runner:
                 cs_assigned = cs_assignment.filter(lambda row: row[2] != None)
                 self.update_SSs(cs_assigned.collect(), self.compressed_sets)
                 
-                rem_points = cs_assigned.filter(lambda row: row[2] == None).map(lambda x: (x[0], x[1])).collect()
+                rem_points = ds_assigned.filter(lambda row: row[2] == None).map(lambda x: (x[0], x[1])).collect()
                 self.retained_sets.extend(rem_points)
-                
-                # Step 11
-                # self.cluster_rs()
 
                 # Step 12
                 self.merge_css()
-
-                # rem_minus_one = rem_points.mapValues(lambda val: -1)
-                # self.out_dict.update(rem_minus_one.collectAsMap())
 
                 # Do last file stuff
                 if idx == len(files) - 1:
