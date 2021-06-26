@@ -397,7 +397,7 @@ class Runner:
             self.discard_sets[label].merge(cs)
 
     def init_sets5(self, pointsRDD):
-        pwi = pointsRDD.collect()
+        pwi = pointsRDD
         num_points = len(pwi)
         print("Total number of points: {}".format(num_points))
         
@@ -623,11 +623,11 @@ class Runner:
 
         for idx, file_path in enumerate(files):
             print("Processing index: {}/{}".format(idx + 1, len(files)))
-            pointsRDD = self.load_points(sc, file_path)
+            points = self.load_points(file_path)
             
             # For the first round, we want to do some extra stuff
             if idx == 0:
-                self.init_sets5(pointsRDD)
+                self.init_sets5(points)
             else:
                 dss = self.discard_sets
                 css = self.compressed_sets
