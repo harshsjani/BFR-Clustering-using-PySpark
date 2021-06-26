@@ -29,49 +29,22 @@ class HCluster:
         for i in range(1, num_clusters):
             maxdist = 0
             new_centroid = None
-            used_idx = None
 
-            for idx, point in pwi:
-                min_dist = Utils.INF
+            for ip in pwi:
+                point = ip[1]
+                
+                min_dist = 10 ** 18
                 for x in range(i):
                     dist = Utils.euclidean_distance(
                         point, centroids[x])
                     if dist < min_dist:
                         min_dist = dist
-                if min_dist > maxdist and min_dist != Utils.INF:
+                if min_dist > maxdist and min_dist != 10 ** 18:
                     maxdist = min_dist
                     new_centroid = point
-                    used_idx = idx
 
             centroids[i] = new_centroid
-            used_points.add(used_idx)
         return centroids
-
-    def get_centroids_random(self, pwi, num_clusters):
-        centroids = []
-        seen = set()
-        centers = 0
-
-        while centers < num_clusters:
-            rnd = random.Random()
-            pt = rnd.choice(pwi)
-            pidx = pt[0]
-            pt = pt[1]
-
-            if not pidx in seen:
-                seen.add(pidx)
-                centers += 1
-                centroids.append(pt)
-        return centroids
-
-    @staticmethod
-    def get_inertia(centers, points, labels):
-        # Sum of squares distance from points to centers
-        inertia = 0
-
-        for idx, p in points:
-            inertia += pow(Utils.euclidean_distance(p, centers[labels[idx]]), 2)
-        return inertia
 
     @staticmethod
     def vector_add(A1, A2, num_dims):
@@ -123,23 +96,15 @@ class HCluster:
         for i in range(self.max_iterations):
             print("Running iteration #: {}".format(i + 1))
             centers_new, centers, labels = self.single_iteration(pwi, centers, centers_new)
-        
-        ctr = Counter(labels.values())
-        mvalue = min(ctr.values())
-        print("Clustering mValues: {}".format(ctr))
 
-        return centers, labels, mvalue
+        return centers, labels, 0
 
-    def fit(self, pwi, randomized=False):
+    def fit(self, pwi):
         best_value = None
 
         for _ in range(self.num_seeds):
             st = time.time()
-            
-            if randomized:
-                centers = self.get_centroids_random(pwi, self.num_clusters)
-            else:
-                centers = self.get_centroids(pwi, self.num_clusters)
+            centers = self.get_centroids(pwi, self.num_clusters)
             print("Time to get centroids: {}".format(time.time() - st))
 
             centers, labels, mvalue = self.run(pwi, centers)
@@ -252,15 +217,8 @@ class Runner:
         self.retained_sets = []
         self.out_dict = {}
     
-    def load_points(self, file_path):
-        with open(file_path) as f:
-            lines = f.readlines()
-            for idx in range(len(lines)):
-                line = lines[idx]
-                pidx, pt = line.split(",", maxsplit=1)
-                pt = list(map(float, pt.split(",")))
-                lines[idx] = (pidx, pt)
-        return lines
+    def load_points(self, sc, file_path):
+        return sc.textFile(os.path.join(self.input_path, file_path)).map(lambda row: row.split(",")).map(lambda row: (str(row[0]), list(map(lambda x: float(x), row[1:]))))
 
     def init_RS(self, points, labels, cluster_ctr):
         singleton_clusters = set()
@@ -401,7 +359,7 @@ class Runner:
         num_points = len(pwi)
         print("Total number of points: {}".format(num_points))
         
-        clustering = HCluster(self.num_clusters, num_seeds=30, num_iterations=1)
+        clustering = HCluster(self.num_clusters, num_seeds=10, num_iterations=1)
         clustering.fit(pwi, True)
 
         ctr = Counter(clustering.labels.values())
@@ -627,7 +585,7 @@ class Runner:
             
             # For the first round, we want to do some extra stuff
             if idx == 0:
-                self.init_sets5(pointsRDD)
+                self.init_sets(pointsRDD)
             else:
                 dss = self.discard_sets
                 css = self.compressed_sets
